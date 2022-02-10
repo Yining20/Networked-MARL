@@ -501,7 +501,7 @@ if __name__ == "__main__":
 
     script_dir = os.path.dirname(__file__)
 
-    with open(script_dir + "data/Neural-Q-Access-h{}-w{}-k{}.txt".format(height, width, k), 'w') as f:  # used to check the progress of learning
+    with open(script_dir + "\\data/Neural-Q-Access-h{}-w{}-k{}.txt".format(height, width, k), 'w') as f:  # used to check the progress of learning
         # first erase the file
         f.seek(0)
         f.truncate()
@@ -512,7 +512,7 @@ if __name__ == "__main__":
     for m in trange(M):
         if m == 0:
             policyRewardList.append(eval_policy(node_list=accessNodeList, rounds=400, env=env))
-            with open(script_dir + "data/Neural-Q-Access-h{}-w{}-k{}.txt".format(height, width, k), 'w') as f:
+            with open(script_dir + "\\data/Neural-Q-Access-h{}-w{}-k{}.txt".format(height, width, k), 'w') as f:
                 f.write("%f\n" % policyRewardList[-1])
             # first find the best benchmark policy and its discounted reward
             for i in range(20):
@@ -557,20 +557,20 @@ if __name__ == "__main__":
         # perform a policy evaluation
         if m % evalInterval == evalInterval - 1:
             tempReward = eval_policy(node_list=accessNodeList, rounds=400, env=env)
-            with open(script_dir+"data/Neural-Q-Access-h{}-w{}-k{}.txt".format(height, width, k), 'a') as f:
+            with open(script_dir+"\\data/Neural-Q-Access-h{}-w{}-k{}.txt".format(height, width, k), 'a') as f:
                 f.write("%f\n" % tempReward)
             policyRewardList.append(tempReward)
 
     # save the trained neural models
     if save_model:
         for i in range(nodeNum):
-            path = script_dir + "model/Neural-Q-Access-h{}-w{}-k{}-a{}.pt".format(height, width, k, i)
+            path = script_dir + "\\model/Neural-Q-Access-h{}-w{}-k{}-a{}.pt".format(height, width, k, i)
             accessNodeList[i].approximator.save_model(path)
 
     # save the parameter dictionaries
     if save_policy:
         for i in range(nodeNum):
-            path = script_dir + "model/Neural-Q-Access-h{}-w{}-k{}-a{}.pickle".format(height, width, k, i)
+            path = script_dir + "\\model/Neural-Q-Access-h{}-w{}-k{}-a{}.pickle".format(height, width, k, i)
             accessNodeList[i].save_policy(path)
 
     # plot the training curves
