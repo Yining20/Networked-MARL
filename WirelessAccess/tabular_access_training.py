@@ -320,7 +320,7 @@ if __name__ == "__main__":
 
     script_dir = os.path.dirname(__file__)
 
-    with open(script_dir+'data/Tabular-Access-{}-{}-{}.txt'.format(height, width, k), 'w') as f:  # used to check the progress of learning
+    with open(script_dir+'\\data/Tabular-Access-{}-{}-{}.txt'.format(height, width, k), 'w') as f:  # used to check the progress of learning
         # first erase the file
         f.seek(0)
         f.truncate()
@@ -329,7 +329,7 @@ if __name__ == "__main__":
     for m in trange(M):
         if m == 0:
             policyRewardList.append(eval_policy(node_list=accessNodeList, rounds=400, env=env))
-            with open(script_dir+'data/Tabular-Access-{}-{}-{}.txt'.format(height, width, k), 'w') as f:
+            with open(script_dir+'\\data/Tabular-Access-{}-{}-{}.txt'.format(height, width, k), 'w') as f:
                 f.write("%f\n" % policyRewardList[-1])
             # first find the best benchmark policy and its discounted reward
             bestBenchmark = 0.0
