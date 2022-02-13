@@ -4,10 +4,13 @@ import numpy as np
 class GlobalNetwork:
     def __init__(self, node_num, k):
         self.nodeNum = node_num  # the total number of nodes in this network
-        self.adjacencyMatrix = np.eye(self.nodeNum, dtype=int)  # initialize the adjacency matrix of the global network
+        # initialize the adjacency matrix of the global network
+        self.adjacencyMatrix = np.eye(self.nodeNum, dtype=int)
         self.k = k  # the number of hops used in learning
-        self.adjacencyMatrixPower = [np.eye(self.nodeNum, dtype=int)]  # cache the powers of the adjacency matrix
-        self.neighborDict = {}  # use a hashmap to store the ((node, dist), neighbors) pairs which we have computed
+        # cache the powers of the adjacency matrix
+        self.adjacencyMatrixPower = [np.eye(self.nodeNum, dtype=int)]
+        # use a hashmap to store the ((node, dist), neighbors) pairs which we have computed
+        self.neighborDict = {}
         self.addingEdgesFinished = False  # have we finished adding edges?
 
     # add an undirected edge between node i and j
@@ -33,9 +36,11 @@ class GlobalNetwork:
             return self.neighborDict[(i, d)]
         neighbors = []
         for j in range(self.nodeNum):
-            if self.adjacencyMatrixPower[d][i, j] > 0:  # this element > 0 implies that dist(i, j) <= d
+            # this element > 0 implies that dist(i, j) <= d
+            if self.adjacencyMatrixPower[d][i, j] > 0:
                 neighbors.append(j)
-        self.neighborDict[(i, d)] = neighbors  # cache the answer so we can reuse later
+        # cache the answer so we can reuse later
+        self.neighborDict[(i, d)] = neighbors
         return neighbors
 
 
@@ -44,7 +49,7 @@ class AccessNetwork(GlobalNetwork):
         super(AccessNetwork, self).__init__(node_num, k)
         self.accessNum = access_num
         self.accessMatrix = np.zeros((node_num, access_num), dtype=int)
-        self.transmitProb = np.ones(access_num)
+        self.transmitProb = np.ones(access_num)  
         self.serviceNum = np.zeros(access_num, dtype=int)  # how many agents should I provide service to?
 
     # add an access point a for node i
@@ -52,11 +57,11 @@ class AccessNetwork(GlobalNetwork):
         self.accessMatrix[i, a] = 1
         self.serviceNum[a] += 1
 
-    # finish adding access points. we can construct the neighbor graph
+    """ # finish adding access points. we can construct the neighbor graph
     def finish_adding_access(self):
         # use accessMatrix to construct the adjacency matrix of (user) nodes
         self.adjacencyMatrix = np.matmul(self.accessMatrix, np.transpose(self.accessMatrix))
-        super(AccessNetwork, self).finish_adding_edges()
+        super(AccessNetwork, self).finish_adding_edges() """
 
     # find the access points for node i
     def find_access(self, i):
@@ -76,16 +81,31 @@ def construct_grid_network(node_num, width, height, k, node_per_grid, transmit_p
         print("nodeNum does not satisfy the requirement of grid network!")
         return None
     access_num = (width - 1) * (height - 1)
-    access_network = AccessNetwork(node_num=node_num, k=k, access_num=access_num)
+    access_network = AccessNetwork(
+        node_num=node_num, k=k, access_num=access_num)
     for j in range(access_num):
         upper_left = j // (width - 1) * width + j % (width - 1)
         upper_right = upper_left + 1
         lower_left = upper_left + width
         lower_right = lower_left + 1
-        for a in [upper_left, upper_right, lower_left, lower_right]:
+        accessed_nodes = [upper_left, upper_right, lower_left, lower_right]
+        for a in accessed_nodes:
             for b in range(node_per_grid):
                 access_network.add_access(node_per_grid * a + b, j)
-    access_network.finish_adding_access()
+            for c in accessed_nodes[accessed_nodes.index(a):]:
+                access_network.add_edge(a * node_per_grid + 1, c * node_per_grid + 1)
+
+    grid_num = width * height
+    for i in range(grid_num):
+        for b in range(node_per_grid):
+            for c in range(b, node_per_grid):
+                access_network.add_edge(
+                    node_per_grid * i + b, node_per_grid * i + c)
+                access_network.inRegionFlag[b,c] = 1
+                access_network.inRegionFlag[c,b] = 1
+
+    access_network.finish_adding_edges()
+    """ access_network.finish_adding_access() """
     # setting transmitProb
     if transmit_prob == 'allone':
         transmit_prob = np.ones(access_num)
@@ -107,11 +127,14 @@ class AccessGridEnv:
         self.ddl = ddl
         self.arrivalProb = arrival_prob
 
+        self.gridNum = height * width
         self.nodeNum = height * width * node_per_grid
         self.accessNum = (height - 1) * (width - 1)
-        self.globalState = np.zeros((self.nodeNum, self.ddl), dtype=int)    # the i th row is the state of agent i
-        self.newGlobalState = np.zeros((self.nodeNum, self.ddl), dtype=int)
-        self.globalAction = np.zeros((self.nodeNum, 2), dtype=int)  # (slot, accessPoint)
+        # the i th row is the state of agent i
+        self.globalState = np.zeros((self.gridNum, self.ddl), dtype=int)
+        self.newGlobalState = np.zeros((self.gridNum, self.ddl), dtype=int)
+        self.globalAction = np.zeros(
+            (self.nodeNum, 2), dtype=int)  # (slot, accessPoint)
         self.globalReward = np.zeros(self.nodeNum, dtype=float)
 
         self.accessNetwork = construct_grid_network(self.nodeNum, self.width, self.height, self.k, self.nodePerGrid,
@@ -119,10 +142,31 @@ class AccessGridEnv:
 
     # Call at start of each episode. Packets with deadline ddl arrive in the buffers according to arrivalProb
     def initialize(self):
-        lastCol = np.random.binomial(n=1, p=self.arrivalProb, size=self.nodeNum)
-        self.globalState = np.zeros((self.nodeNum, self.ddl), dtype=int)
-        self.globalState[:, self.ddl - 1] = lastCol
+        lastCol = np.random.binomial(n=1, p=self.arrivalProb, size=(self.gridNum,self.nodePerGrid))
+        self.globalState = np.zeros((self.gridNum, self.ddl), dtype=int)
+        self.globalState[:, self.ddl - 1] = lastCol.sum(axis = 1)
         self.globalReward = np.zeros(self.nodeNum, dtype=float)
+
+    def observe_state_out(self,index,depth):
+        result = []
+        if index % self.node_per_grid != 0:
+            print("Only central node in each region can communicate with outer nodes!")
+            return -1
+        for j in self.accessNetwork.find_neighbors(index, depth):
+            if self.accessNetwork.inRegionFlag == 0: # Only receive the state of the outer region
+                result.append(tuple(self.globalState[j // self.nodePerGrid, :]))
+        return tuple(result)
+
+    def observe_state_in(self, index):
+        return tuple(self.globalState[index // self.nodePerGrid, :])
+
+    def observe_state_action_in(self, index, depth):
+        result = []
+        result.append(self.globalState[index // self.nodePerGrid, :])
+        for j in self.accessNetwork.find_neighbors(index, depth):
+            result.append(
+                (self.globalAction[j, 0], self.globalAction[j, 1]))
+        return tuple(result)
 
     def observe_state_g(self, index, depth):
         result = []
@@ -133,7 +177,8 @@ class AccessGridEnv:
     def observe_state_action_g(self, index, depth):
         result = []
         for j in self.accessNetwork.find_neighbors(index, depth):
-            result.append((tuple(self.globalState[j, :]), (self.globalAction[j, 0], self.globalAction[j, 1])))
+            result.append(
+                (tuple(self.globalState[j, :]), (self.globalAction[j, 0], self.globalAction[j, 1])))
         return tuple(result)
 
     def observe_reward(self, index):
@@ -170,7 +215,7 @@ class AccessGridEnv:
                 if self.globalState[client, slot] == 1:  # this is a valid message
                     success = np.random.binomial(1, self.accessNetwork.transmitProb[a])
                     if success == 1:
-                        self.newGlobalState[client, slot] = 0
+                        self.newGlobalState[client // self.nodePerGrid, slot] -= 1
                         self.globalReward[client] = 1.0
         # update global state to next time step
         lastCol = np.random.binomial(n=1, p=self.arrivalProb, size=self.nodeNum)
