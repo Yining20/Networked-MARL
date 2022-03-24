@@ -99,7 +99,8 @@ class AccessNode(Node):
         # we use packetQueue to represent the current local state, which is (e_1, e_2, ..., e_d)
         self.packetQueue = np.zeros(self.ddl,
                                     dtype=int)  # use 1 to represent a packet with this remaining time, otherwise 0
-        self.accessPoints = env.accessNetwork.find_access(
+        # self.accessPoints = env.accessNetwork.find_access(
+        self.accessPoints = env.grid_net.find_access(
             i=index)  # find and cache the access points this node can access
         self.accessNum = len(self.accessPoints)  # the number of access points
         self.actionNum = self.accessNum * self.ddl + 1  # the number of possible actions, action is a tuple (slot, accessPoint)
@@ -113,13 +114,18 @@ class AccessNode(Node):
 
     # initialize the local state (called at the beginning of the training process)
     def initialize_state(self):
-        self.state.append(self.env.observe_state_g(self.index, 0)[0])  # append this state to state record
+        # self.state.append(self.env.observe_state_g(self.index, 0)[0])  # append this state to state record
+        self.state.append(self.env.observe_state_g_v2(self.index, self.k)[0])  # append this state to state record
+        # self.state.append(self.env.observe_state_g(self.index, self.k))  # append this state to state record
 
     # At each time step t, call updateState, updateAction, updateReward, updateQ in this order
     def update_state(self):
         self.currentTimeStep += 1
-        self.state.append(self.env.observe_state_g(self.index, 0)[0])  # append this state to state record
-        self.packetQueue = self.state[-1]
+        # self.state.append(self.env.observe_state_g(self.index, 0)[0])  # append this state to state record
+        self.state.append(self.env.observe_state_g_v2(self.index, self.k)[0])
+        # self.state.append(self.env.observe_state_g(self.index, self.k))  # append this state to state record
+        # self.packetQueue = self.state[-1]
+        self.packetQueue = self.env.observe_state_g(self.index, 0)[0]
 
     def update_action(self, benchmark_policy=None):
         if benchmark_policy is not None:
@@ -253,13 +259,15 @@ def evalBenchmark(node_list, rounds, act_prob, env):
     totalRewardSum = 0.0
     benchmarkPolicyList = []
     for i in range(nodeNum):
-        accessPoints = env.accessNetwork.find_access(i)
+        # accessPoints = env.accessNetwork.find_access(i)
+        accessPoints = env.grid_net.find_access(i)
         accessPointsNum = len(accessPoints)
         benchmarkPolicy = np.zeros(accessPointsNum + 1)
         totalSum = 0.0
         for j in range(accessPointsNum):
             # print(accessNetwork.serviceNum[accessPoints[j]])
-            tmp = 100 * env.accessNetwork.transmitProb[accessPoints[j]] / env.accessNetwork.serviceNum[accessPoints[j]]
+            # tmp = 100 * env.accessNetwork.transmitProb[accessPoints[j]] / env.accessNetwork.serviceNum[accessPoints[j]]
+            tmp = 100 * env.grid_net.transmitProb[accessPoints[j]] / env.grid_net.serviceNum[accessPoints[j]]
             totalSum += tmp
             benchmarkPolicy[j + 1] = tmp
         for j in range(accessPointsNum):
@@ -300,17 +308,19 @@ def evalBenchmark(node_list, rounds, act_prob, env):
 
 if __name__ == "__main__":
     k = 1
-    height = 3
-    width = 4
-    node_per_grid = 2
+    height = 3 #3
+    width = 4 #4
+    node_per_grid = 1 #2
     nodeNum = height * width * node_per_grid
-    env = env_access.AccessGridEnv(height=height, width=width, k=k, node_per_grid=node_per_grid)
+    ddl = 2
+    env = env_access.AccessGridEnv(height=height, width=width, k=k, node_per_grid=node_per_grid, ddl = ddl)
 
     gamma = 0.7
-    ddl = 2
     arrivalProb = 0.5
     T = 10
-    M = 120000
+    # M = 120000
+    M = 20000
+
 
     evalInterval = 2000     # evaluate the policy every evalInterval rounds (outer loop)
     restartInterval = 100
@@ -369,18 +379,19 @@ if __name__ == "__main__":
         # perform the grad update
         for i in range(nodeNum):
             neighborList = []
-            for j in env.accessNetwork.find_neighbors(i, k):
+            # for j in env.accessNetwork.find_neighbors(i, k):
+            for j in env.grid_net.find_neighbors(i, k):
                 neighborList.append(accessNodeList[j])
             accessNodeList[i].update_params(neighborList, 5.0 / math.sqrt(m % restartInterval + 1))
 
         # perform a policy evaluation
         if m % evalInterval == evalInterval - 1:
             tempReward = eval_policy(node_list=accessNodeList, rounds=400, env=env)
-            with open(script_dir+'data/Tabular-Access-{}-{}-{}.txt'.format(height, width, k), 'a') as f:
+            with open(script_dir+'\\data/Tabular-Access-{}-{}-{}.txt'.format(height, width, k), 'a') as f:
                 f.write("%f\n" % tempReward)
             policyRewardList.append(tempReward)
 
     lam = np.linspace(0, (len(policyRewardList) - 1) * evalInterval, len(policyRewardList))
     plt.plot(lam, policyRewardList)
     plt.hlines(y=bestBenchmark, xmin=0, xmax=M, colors='g', label="Benchmark")
-    plt.savefig(script_dir+"data/Tabular-Access-{}-{}-{}.jpg".format(height, width, k))
+    plt.savefig(script_dir+"\\data/Tabular-Access-{}-{}-{}.jpg".format(height, width, k))

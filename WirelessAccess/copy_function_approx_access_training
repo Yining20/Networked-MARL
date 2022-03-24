@@ -1,0 +1,506 @@
+import math
+from scipy import special
+from tqdm import trange
+import numpy as np
+import matplotlib.pyplot as plt
+import env_access
+import copy
+import os
+
+# np.random.seed(0)
+
+class AccessNode:
+    def __init__(self, index, deadline, k, Lq, La, node_per_grid, env):
+        self.index = index
+        self.La = La # feature vector length for action
+        self.Lq = Lq
+
+        self.state = []  # The list of local state at different time steps
+        self.action = []  # The list of local actions at different time steps
+        self.reward = []  # The list of local reward at different time steps
+        self.avgreward = [] # The list of average local reward at different time steps
+        self.kHop = []  # The list to record the (state, action) pairs of k-hop neighbors
+        self.qFeatureMtx = {}
+        self.actionFeatureMtx = {}
+        self.q =  {}
+        self.qparams = np.random.rand(self.Lq) 
+        self.params = np.random.rand(self.La) #np.zeros(self.La) 
+        self.paramsDict = {}
+
+
+        self.k = k
+        self.ddl = deadline  # the initial deadline of each packet
+        self.node_per_grid = node_per_grid
+        self.accessPoints = env.grid_net.find_access(
+            i= index//node_per_grid)  # find and cache the access points this node can access
+        self.accessNum = len(self.accessPoints)  # the number of access points
+        self.actionNum = self.accessNum * self.ddl + 1  # the number of possible actions, action is a tuple (slot, accessPoint)
+        # construct a list of possible actions
+        self.actionList = [(-1, -1)]  # (-1, -1) is an empty action that does nothing
+        for slot in range(self.ddl):
+            for a in self.accessPoints:
+                self.actionList.append((slot, a))
+        self.env = env
+
+    def restart(self):
+        self.state.clear()
+        self.action.clear()
+        self.reward.clear()
+        self.avgreward.clear()
+        self.kHop.clear()
+
+    # initialize the local state (called at the beginning of the training process)
+    def initialize_state(self):
+        self.state.append(self.env.observe_state_g_v2(self.index, self.k))  # append this state to state record
+        # self.state.append(self.env.observe_state_g_v2(self.index, 0))  # append this state to state record
+        
+        # self.state.append(self.env.observe_state_g(self.index))  
+
+    def restart_params(self):
+        self.params = np.zeros(self.La)
+        self.qparams = np.zeros(self.Lq)
+
+    # At each time, user node observes the state of the whole grid
+    def update_state(self):
+        self.state.append(self.env.observe_state_g_v2(self.index, self.k))  # append this state to state record
+        # self.state.append(self.env.observe_state_g_v2(self.index, 0))  # append this state to state record
+        # self.state.append(self.env.observe_state_g(self.index))
+
+    # need to call this after the first time step
+    def update_k_hop(self):
+        self.kHop.append(self.env.observe_state_action_g(self.index))
+    
+    def update_action(self):
+        # get the current state
+        curr_State = self.state[-1]
+        
+        # '''
+        # policy function approximation
+        if curr_State not in self.actionFeatureMtx:
+            self.actionFeatureMtx[curr_State] = np.random.rand(self.actionNum, self.La)
+        # compute the probability vector
+        probVec = special.softmax(np.matmul(self.actionFeatureMtx[curr_State], self.params))
+        # '''
+
+        '''
+        params = self.paramsDict.get(curr_State, np.zeros(self.actionNum))
+        probVec = special.softmax(params)
+        '''
+
+        # randomly select an action based on probVec
+        currentAction = self.actionList[np.random.choice(a=self.actionNum, p=probVec)]
+        '''
+        if self.index == 0:
+            currentAction = self.actionList[np.random.choice(a=self.actionNum, p=[0,1])]
+        else:
+            currentAction = self.actionList[np.random.choice(a=self.actionNum, p=[1,0])]
+        '''
+        self.action.append(currentAction)
+        self.env.update_action(self.index, currentAction)
+
+    # oneHopNeighbors is a list of accessNodes
+    def update_reward(self):
+        currentReward = self.env.observe_reward(self.index)
+        self.reward.append(currentReward)
+
+    def update_avgreward(self,_alpha):
+        if len(self.avgreward) == 0:
+            r_temp = _alpha * self.reward[-1]
+        else:
+            r_temp = (1-_alpha) * self.avgreward[-1] + _alpha * self.reward[-1]
+        self.avgreward.append(r_temp)
+
+    # '''
+    # Q-function function approximation
+    def calc_q(self, StateAction_pair):
+        Q_value = np.matmul(self.qFeatureMtx[StateAction_pair], self.qparams)
+        return Q_value
+
+    # kHopNeighbors is a list of accessNodes, alpha is learning rate
+    def update_q_params(self, _alpha):        
+        last_StateAction = self.kHop[-2]
+        curr_StateAction = self.kHop[-1]
+        # fetch the Q value based on neighbors' states and actions
+        lastQTerm1 = self.calc_q(last_StateAction)
+        lastQTerm2 = self.calc_q(curr_StateAction)
+        # compute the temporal difference
+        _temp = self.reward[-1] - self.avgreward[-1] + lastQTerm2 - lastQTerm1
+        # perform the Q value update
+        _grad = self.qFeatureMtx[last_StateAction]
+        self.qparams += _alpha * _grad * _temp
+    # '''
+    
+    '''
+    def calc_q(self, StateAction_pair):
+        Q_value = self.q.get(StateAction_pair, 0.0)
+        return Q_value
+
+    def update_q(self, _alpha): 
+        last_StateAction = self.kHop[-2]
+        curr_StateAction = self.kHop[-1]
+        # fetch the Q value based on neighbors' states and actions
+        lastQTerm1 = self.calc_q(last_StateAction)
+        lastQTerm2 = self.calc_q(curr_StateAction)
+        # compute the temporal difference
+        q_temp = self.reward[-1] - self.avgreward[-1] + lastQTerm2 - lastQTerm1
+        # perform the Q value update
+        self.q[last_StateAction] = lastQTerm1 + _alpha  * q_temp
+    '''
+
+    # eta is the learning rate
+    def update_params(self, _beta, avg_Q = 'None'):
+        
+        # curr_State_localAction = (self.state[-2], self.action[-2])
+        last_State = self.state[-2] 
+        last_StateAction = self.kHop[-2]    
+
+        if avg_Q == 'None':
+            avg_Q = self.calc_q(last_StateAction)
+
+        '''
+        params = self.paramsDict.get(last_State, np.zeros(self.actionNum))
+        probVec = special.softmax(params)
+        grad = -probVec
+        actionIndex = self.actionList.index(self.action[-2])  # get the index of currentAction
+        grad[actionIndex] += 1.0
+        self.paramsDict[last_State] = params + _beta * avg_Q * grad    
+        '''
+
+
+        # '''
+        # policy function approximation
+        param_temp = special.softmax(np.matmul(self.actionFeatureMtx[last_State], self.params))
+        param_temp2 = np.zeros(self.La)
+        for i in range(self.actionNum):
+            param_temp2 += param_temp[i] * self.actionFeatureMtx[last_State][i,:]
+        _action_index = self.actionList.index(self.action[-2])
+        _grad = self.actionFeatureMtx[last_State][_action_index,:] - param_temp2 
+        self.params += _beta * _grad * avg_Q
+        # '''
+
+    def total_reward(self):
+        totalReward = np.sum(self.reward) / len(self.reward)
+        return totalReward
+
+    def update_action_benchmark(self, benchmark_policy):
+        actProb = benchmark_policy[0]
+        flagAct = np.random.binomial(1, actProb)  # should I send out a packet?
+        if flagAct == 0:
+            self.action.append((-1, -1))
+            self.env.update_action(self.index, (-1, -1))
+            return
+        # find the packet with the earliest ddl
+        benchSlot = -1
+        local_state_temp = env.observe_local_state_g(self.index, 0)[self.index % self.node_per_grid]
+        for d in range(self.ddl):
+            if local_state_temp[d] > 0:
+                benchSlot = d
+                break
+        if benchSlot == -1:
+            self.action.append((-1, -1))
+            self.env.update_action(self.index, (-1, -1))
+            return
+        # select the access point to send to
+        benchProb = benchmark_policy[1:]
+        benchAccessPoint = self.accessPoints[np.random.choice(a=self.accessNum, p=benchProb)]
+        self.action.append((benchSlot, benchAccessPoint))
+        self.env.update_action(self.index, (benchSlot, benchAccessPoint))
+        return        
+
+def update_qValue_out(neighbor_grids):
+    avg_Q_temp = 0.0
+    for _grid in neighbor_grids:
+        for _node in _grid:
+            last_StateAction = _node.kHop[-2]
+            avg_Q_temp += _node.calc_q(last_StateAction)
+    return avg_Q_temp
+
+def eval_benchmark(node_list, rounds, T, act_prob, env):
+    totalRewardSum = 0.0
+    benchmarkPolicyList = []
+    for i in range(gridNum):
+        accessPoints = env.grid_net.find_access(i)
+        accessPointsNum = len(accessPoints)
+        benchmarkPolicy = np.zeros(accessPointsNum + 1)
+        totalSum = 0.0
+        for j in range(accessPointsNum):
+            tmp = 100 * env.grid_net.transmitProb[accessPoints[j]] \
+                / env.grid_net.serviceNum[accessPoints[j]] \
+                    / node_per_grid
+            totalSum += tmp
+            benchmarkPolicy[j + 1] = tmp 
+        benchmarkPolicy[1:] = benchmarkPolicy[1:]/totalSum 
+        benchmarkPolicy[0] = act_prob
+        benchmarkPolicyList.append(benchmarkPolicy)
+
+    for _ in range(1, rounds+1):
+        env.initialize()
+        for i in range(nodeNum):
+            node_list[i].restart()
+            node_list[i].initialize_state()
+
+        for i in range(nodeNum):
+            node_list[i].update_action_benchmark(benchmarkPolicyList[i//node_per_grid])
+    
+        for _ in range(1, T + 1):
+            env.generate_reward()
+            for i in range(nodeNum):
+                node_list[i].update_reward()
+            env.step()
+            for i in range(nodeNum):
+                node_list[i].update_state()
+            for i in range(nodeNum):
+                node_list[i].update_action_benchmark(benchmarkPolicyList[i//node_per_grid])
+        # compute the total reward
+        averageReward = 0.0
+        for i in range(nodeNum):
+            averageReward += node_list[i].total_reward()
+        averageReward /= nodeNum
+        totalRewardSum += averageReward
+    return totalRewardSum / rounds
+
+# do not update Q when evaluating a policy
+def eval_policy(node_list, rounds, T, env):
+    totalRewardSum = 0.0
+    
+    for _ in range(rounds):
+        env.initialize()
+        for i in range(nodeNum):
+            node_list[i].restart()
+            node_list[i].initialize_state()
+        for i in range(nodeNum):
+            node_list[i].update_action()
+        env.generate_reward()
+        for i in range(nodeNum):
+            node_list[i].update_reward()
+
+        for _ in range(1, T + 1):
+            env.step()
+            for i in range(nodeNum):
+                node_list[i].update_state()
+            for i in range(nodeNum):
+                node_list[i].update_action()
+            env.generate_reward()
+            for i in range(nodeNum):
+                node_list[i].update_reward()
+        # compute the total reward
+        averageReward = 0.0
+        for i in range(nodeNum):
+            averageReward += node_list[i].total_reward()
+        averageReward /= nodeNum
+        totalRewardSum += averageReward
+    return totalRewardSum/rounds 
+
+
+if __name__ == "__main__":
+    k = 1
+    ddl = 1
+    height = 2
+    width = 2
+    node_per_grid = 2 # fixed 1
+    gridNum = height * width
+    nodeNum = gridNum * node_per_grid
+    env = env_access.AccessGridEnv(height=height, width=width, k=k, node_per_grid=node_per_grid, ddl = ddl)
+    
+    # action-value function approximation feature vector dimension
+    Lq = 300 # 256
+    La = 16 #16
+    Ep_Num = 1
+    T = 500000 #600000, 50000
+    evalInterval = 2000 # 10000    # evaluate the policy every evalInterval rounds (outer loop)
+    restartInterval = 500  # 500 100 2000
+
+    # Ep_Num = 20000
+    # T = 10
+    # evalInterval = 2000
+    # restartInterval = 100
+
+    _scale = 1
+    _alpha = lambda t: 1 / (t+1) ** 0.65 * _scale
+    _beta = lambda t: 1 / (t+1) ** 0.85 * _scale     
+    # _alpha = lambda t: 1 / ((t+1) % 1000 + 1)** 0.5
+    # _beta = lambda t: 5 / ((t+1) % 100 + 1) ** 0.5   
+    # _alpha = lambda t: 1 / (t+1) ** 0.65 
+    # _beta = lambda t: 1 / (t+1) ** 0.85 * 5  
+    
+    accessNodeList = []
+    for i in range(nodeNum):
+        accessNodeList.append(\
+            AccessNode(index=i, deadline = ddl, k=k, Lq = Lq, La = La, node_per_grid=node_per_grid, env=env))
+
+    # Performance evaluation metrics
+    policyRewardList = []
+    # experi_avg_reward  = np.zeros(T)  
+    temp_avg_reward0 = []
+    policy_record = []
+    prob_state = np.zeros((nodeNum,T))
+
+    script_dir = os.path.dirname(__file__)
+    # with open(script_dir+'\\data/my-PFA-QFA-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'w') as f:  # used to check the progress of learning
+    with open(script_dir+\
+        '\\data/my-PFA-QFA-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'w') as f:  # used to check the progress of learning
+        # first erase the file
+        f.seek(0)
+        f.truncate()   
+
+    # Actor-critic
+    for e in range(Ep_Num):
+        # temp_experi_avg_reward = np.zeros((nodeNum,T))
+
+        env.initialize()
+        for i in range(nodeNum):
+            accessNodeList[i].restart()
+            accessNodeList[i].restart_params()
+            accessNodeList[i].initialize_state()
+        for i in range(nodeNum):
+            accessNodeList[i].update_action()
+        for i in range(nodeNum):
+            accessNodeList[i].update_k_hop()
+
+        # Q-function function approximation
+        # Synchronize Q feature Matrix after initialization
+        for j in range(gridNum):
+            _node = accessNodeList[j * node_per_grid]
+            StateAction_pair = _node.kHop[-1]
+            if StateAction_pair not in _node.qFeatureMtx:
+                _node.qFeatureMtx[StateAction_pair] = np.random.rand(_node.Lq)/np.sqrt(_node.Lq)
+                for l in range(1, node_per_grid):
+                    accessNodeList[j * node_per_grid + l].qFeatureMtx[StateAction_pair] =\
+                         _node.qFeatureMtx[StateAction_pair]
+
+
+        for t in trange(1,T+1): 
+            env.generate_reward()
+            for i in range(nodeNum):
+                accessNodeList[i].update_reward()
+            env.step()
+            for i in range(nodeNum):
+                accessNodeList[i].update_state()
+            for i in range(nodeNum):
+                accessNodeList[i].update_action()
+            for i in range(nodeNum):
+                accessNodeList[i].update_k_hop()
+
+            # Q-function function approximation
+            # Synchronize Q feature Matrix after initialization
+            for j in range(gridNum):
+                _node = accessNodeList[j * node_per_grid]
+                StateAction_pair = _node.kHop[-1]
+                if StateAction_pair not in _node.qFeatureMtx:
+                    _node.qFeatureMtx[StateAction_pair] = np.random.rand(_node.Lq)/np.sqrt(_node.Lq)
+                    for l in range(1, node_per_grid):
+                        accessNodeList[j * node_per_grid + l].qFeatureMtx[StateAction_pair] =\
+                             _node.qFeatureMtx[StateAction_pair]
+
+            avg_Q = []
+            if t == 1:
+                avg_Q = [0] * gridNum
+            else:
+                for j in range(gridNum):
+                    neighbor_grids = []
+                    for a in env.grid_net.find_neighbors(j, k):
+                        _temp = []
+                        for b in range(node_per_grid):
+                            _temp.append(accessNodeList[a*node_per_grid+b])
+                        neighbor_grids.append(_temp)
+                    avg_Q.append(update_qValue_out(neighbor_grids)/nodeNum)
+
+            for i in range(nodeNum):           
+                accessNodeList[i].update_avgreward(1.0 / math.sqrt(t % restartInterval + 1))
+                # Q-function function approximation 
+                accessNodeList[i].update_q_params(1.0 / math.sqrt(t % restartInterval + 1))
+                # accessNodeList[i].update_q(1.0 / math.sqrt(t % restartInterval + 1))
+                
+                # accessNodeList[i].update_avgreward(_alpha(t))
+                # accessNodeList[i].update_q(_alpha(t))
+            
+            for i in range(nodeNum):
+                # accessNodeList[i].update_params(5.0 / (t % restartInterval + 1) ** 0.5,\
+                #     avg_Q[i//node_per_grid])
+                accessNodeList[i].update_params(1.0 / (t % restartInterval + 1) ** 0.85,\
+                    avg_Q[i//node_per_grid])
+                # accessNodeList[i].update_params(_beta(t), avg_Q[i//node_per_grid])
+
+            '''
+            # test start-------------------------
+            state_temp = accessNodeList[0].state[0]
+            for i in range(nodeNum):
+                prob_temp = special.softmax(accessNodeList[i].paramsDict.get(state_temp))
+                # # policy function approximation
+                # prob_temp = special.softmax(np.matmul(accessNodeList[i].actionFeatureMtx[state_temp], \
+                #     accessNodeList[i].params))
+                prob_state[i,t-1] = prob_temp[0]
+            print(prob_state[:,t-1])
+            # test end------------------------- 
+            '''
+
+            if t % evalInterval == evalInterval - 1 or t == 1:
+                temp_policy = []
+                for i in range(nodeNum):
+                    # temp_policy.append(accessNodeList[i].paramsDict)
+                    # # policy function approximation
+                    temp_policy.append(accessNodeList[i].params)
+                policy_record.append(copy.deepcopy(temp_policy))
+
+    #     for i in range(nodeNum):
+    #         if t == 1:
+    #             temp_experi_avg_reward[i,t-1] = accessNodeList[i].reward[-1]
+    #         else:
+    #             temp_experi_avg_reward[i,t-1] = ((t-1)*temp_experi_avg_reward[i,t-2]+accessNodeList[i].reward[-1])/t
+
+    #     temp_experi_avg_reward = np.sum(temp_experi_avg_reward, axis = 0)/ nodeNum
+    #     experi_avg_reward = experi_avg_reward + temp_experi_avg_reward
+    # experi_avg_reward = experi_avg_reward / Ep_Num
+
+    # Benchmark Aloha policy
+    bestBenchmark = 0.0
+    bestBenchmarkProb = 0.0
+    for i in range(20):
+        tmp = eval_benchmark(node_list=accessNodeList, rounds=1, T=3000, act_prob=i / 20.0, env=env)
+        if tmp > bestBenchmark:
+            bestBenchmark = tmp
+            bestBenchmarkProb = i / 20.0
+
+    for _policy in policy_record:
+        for i in range(nodeNum):
+            # accessNodeList[i].paramsDict = _policy[i]
+            # # policy function approximation
+            accessNodeList[i].params = _policy[i]
+        temp = eval_policy(node_list=accessNodeList, rounds=1, T=3000,  env=env)
+        temp_avg_reward0.append(temp)
+        with open(script_dir+\
+            '\\data/my-PFA-QFA-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'a') as f:
+                f.write("%f\n" % temp)
+   
+    '''
+   # test start-------------------------
+    fig1, ax1 = plt.subplots()
+    for i in range(nodeNum):
+        plt.plot(np.arange(T),prob_state[i,:])
+    plt.show()
+    '''
+
+    # softmax update aciton
+    for state_temp in list(accessNodeList[0].actionFeatureMtx.keys()):
+        prob_state=np.zeros(nodeNum)
+        for i in range(nodeNum):
+            # prob_temp = special.softmax(accessNodeList[i].paramsDict.get(state_temp))
+            # policy function approximation
+            prob_temp = special.softmax(np.matmul(accessNodeList[i].actionFeatureMtx[state_temp], \
+                accessNodeList[i].params))
+            prob_state[i] = prob_temp[0]
+        print(state_temp, prob_state)
+    # test end-------------------------
+    
+
+    # temp_avg_reward = np.sum(np.reshape(temp_avg_reward0, [Ep_Num, (T+1) // evalInterval]), axis = 0) / Ep_Num
+    fig2, ax2 = plt.subplots()
+    lam = np.linspace(0, (len(temp_avg_reward0) - 1) * evalInterval, len(temp_avg_reward0))
+    ax2.plot(lam, temp_avg_reward0, linewidth=1, label='Scalable Actor-critic')
+    ax2.plot(lam, bestBenchmark*np.ones(len(temp_avg_reward0)), label='Benchmark ALOHA')
+    ax2.legend()
+    plt.title("Simulated Average Return (\mu)")
+    plt.xlabel('iteration')
+    plt.savefig(script_dir+\
+        "\\data/my-PFA-QFA-Tabular-Access-{}-{}-{}-{}-{}.jpg".format(height, width, k, node_per_grid,ddl))
+    plt.show()
