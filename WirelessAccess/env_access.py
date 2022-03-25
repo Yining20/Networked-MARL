@@ -179,6 +179,15 @@ class AccessGridEnv:
                 result.append(tuple(self.GlobalState[a * self.nodePerGrid + b, :]))
         return tuple(result)
 
+    def observe_local_state_g_v2(self, index, depth='None'):
+        if depth == 'None':
+            depth = self.k
+        result = []
+        for a in self.grid_net.find_neighbors(index//self.nodePerGrid, depth):
+            for b in range(self.nodePerGrid):
+                result.append(self.GlobalState[a * self.nodePerGrid + b, 0])
+        return tuple(result)
+
     def observe_state_action_g(self, index, depth = 'None'):
         if depth == 'None':
             depth = self.k

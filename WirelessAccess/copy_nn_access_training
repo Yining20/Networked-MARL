@@ -6,14 +6,27 @@ import matplotlib.pyplot as plt
 import env_access
 import copy
 import os
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 # np.random.seed(0)
+class Net(nn.Module):
+    def __init__(self, n_feature, n_hidden):
+        super(Net, self).__init__()
+        self.hidden = torch.nn.Linear(n_feature, n_hidden)   # hidden layer
+        self.out = torch.nn.Linear(n_hidden, 1)   # output layer
+
+    def forward(self, x):
+        x = F.relu(self.hidden(x))      # activation function for hidden layer
+        x = self.out(x)
+        return x
+
 
 class AccessNode:
-    def __init__(self, index, deadline, k, Lq, La, node_per_grid, env):
+    def __init__(self, index, deadline, k, buffer_size, La, node_per_grid, env):
         self.index = index
         self.La = La # feature vector length for action
-        self.Lq = Lq
 
         self.state = []  # The list of local state at different time steps
         self.action = []  # The list of local actions at different time steps
@@ -23,11 +36,10 @@ class AccessNode:
         self.qFeatureMtx = {}
         self.actionFeatureMtx = {}
         self.q =  {}
-        self.qparams = np.random.rand(self.Lq) 
-        self.params = np.random.rand(self.La) #np.zeros(self.La) 
+        self.params = np.zeros(self.La)
         self.paramsDict = {}
 
-
+        
         self.k = k
         self.ddl = deadline  # the initial deadline of each packet
         self.node_per_grid = node_per_grid
@@ -41,6 +53,12 @@ class AccessNode:
             for a in self.accessPoints:
                 self.actionList.append((slot, a))
         self.env = env
+
+        self.buffer_size = buffer_size
+        self.Q_Net = None
+        self.init_Q_Net()
+        self.StateAction_list = []
+        self.r_list = []
 
     def restart(self):
         self.state.clear()
@@ -56,47 +74,39 @@ class AccessNode:
         self.state.append(self.env.observe_state_g_v2(self.index, 0))  # append this state to state record
         
         # self.state.append(self.env.observe_state_g(self.index))  
+        # self.state.append(self.env.observe_local_state_g_v2(self.index, 0))
 
+        
     def restart_params(self):
         self.params = np.zeros(self.La)
-        self.qparams = np.zeros(self.Lq)
 
     # At each time, user node observes the state of the whole grid
     def update_state(self):
         # self.state.append(self.env.observe_state_g_v2(self.index, self.k))  # append this state to state record
         # depth = 0 when node_per_grid>0
         self.state.append(self.env.observe_state_g_v2(self.index, 0))  # append this state to state record
+
+        # self.state.append(self.env.observe_local_state_g_v2(self.index, 0))
         # self.state.append(self.env.observe_state_g(self.index))
 
     # need to call this after the first time step
     def update_k_hop(self):
+        # self.kHop.append(self.env.observe_local_state_action_g(self.index))
         self.kHop.append(self.env.observe_state_action_g(self.index))
     
     def update_action(self):
         # get the current state
         curr_State = self.state[-1]
         
-        '''
         # policy function approximation
         if curr_State not in self.actionFeatureMtx:
             self.actionFeatureMtx[curr_State] = np.random.rand(self.actionNum, self.La)
         # compute the probability vector
         probVec = special.softmax(np.matmul(self.actionFeatureMtx[curr_State], self.params))
-        '''
-
-        # '''
-        params = self.paramsDict.get(curr_State, np.zeros(self.actionNum))
-        probVec = special.softmax(params)
-        # '''
 
         # randomly select an action based on probVec
         currentAction = self.actionList[np.random.choice(a=self.actionNum, p=probVec)]
-        '''
-        if self.index == 0:
-            currentAction = self.actionList[np.random.choice(a=self.actionNum, p=[0,1])]
-        else:
-            currentAction = self.actionList[np.random.choice(a=self.actionNum, p=[1,0])]
-        '''
+
         self.action.append(currentAction)
         self.env.update_action(self.index, currentAction)
 
@@ -112,42 +122,78 @@ class AccessNode:
             r_temp = (1-_alpha) * self.avgreward[-1] + _alpha * self.reward[-1]
         self.avgreward.append(r_temp)
 
-    '''
+
+ 
     # Q-function function approximation
+    def init_Q_Net(self):
+        n_feature = (1 + node_per_grid*(ddl+1 + (height - 1)*(width - 1)))\
+                * len(env.grid_net.find_neighbors(self.index//node_per_grid, self.k))
+        n_hidden = min(int(n_feature / 2), 64)
+        self.Q_Net = Net(n_feature, n_hidden) 
+        self.optimizer = torch.optim.Adam(self.Q_Net.parameters(), lr=1e-4)
+
+    def Q_net_input(self, StateAction_pair):
+        max_len = 1000
+        tmp_list = list(StateAction_pair)
+        result_vector = np.zeros(max_len)
+        pointer = 0
+
+        for i in range(len(tmp_list)):
+            SA = tmp_list[i]
+            state_list = list(SA[0])
+            for e in state_list:
+                result_vector[pointer] = e
+                pointer += 1
+            action_list = list(SA[1])
+            for j in range(len(action_list)):
+                act = action_list[j]
+                loc, dest = act
+                result_vector[pointer + loc + 1] = 1
+                pointer += (ddl + 1)
+                if dest != -1:
+                    result_vector[pointer + dest] = 1
+                pointer += (height - 1)*(width - 1)
+                
+        return result_vector[:pointer]
+
     def calc_q(self, StateAction_pair):
-        Q_value = np.matmul(self.qFeatureMtx[StateAction_pair], self.qparams)
-        return Q_value
+        Q_net_input_tensor = torch.tensor(self.Q_net_input(StateAction_pair), dtype=torch.float)
+        Q_value = self.Q_Net(Q_net_input_tensor)
+        return Q_value.detach().numpy()
 
     # kHopNeighbors is a list of accessNodes, alpha is learning rate
-    def update_q_params(self, _alpha):        
-        last_StateAction = self.kHop[-2]
-        curr_StateAction = self.kHop[-1]
-        # fetch the Q value based on neighbors' states and actions
-        lastQTerm1 = self.calc_q(last_StateAction)
-        lastQTerm2 = self.calc_q(curr_StateAction)
-        # compute the temporal difference
-        _temp = self.reward[-1] - self.avgreward[-1] + lastQTerm2 - lastQTerm1
-        # perform the Q value update
-        _grad = self.qFeatureMtx[last_StateAction]
-        self.qparams += _alpha * _grad * _temp
-    '''
-    
-    # '''
-    def calc_q(self, StateAction_pair):
-        Q_value = self.q.get(StateAction_pair, 0.0)
-        return Q_value
+    def update_q_model(self):        
+        self.StateAction_list.append(self.Q_net_input(self.kHop[-2]))
+        self.r_list.append(self.reward[-1] - self.avgreward[-1])
+        if len(self.StateAction_list) < self.buffer_size:
+            return
+        self.StateAction_list.append(self.Q_net_input(self.kHop[-1]))
 
-    def update_q(self, _alpha): 
-        last_StateAction = self.kHop[-2]
-        curr_StateAction = self.kHop[-1]
-        # fetch the Q value based on neighbors' states and actions
-        lastQTerm1 = self.calc_q(last_StateAction)
-        lastQTerm2 = self.calc_q(curr_StateAction)
-        # compute the temporal difference
-        q_temp = self.reward[-1] - self.avgreward[-1] + lastQTerm2 - lastQTerm1
+        evaluate_list = copy.deepcopy(self.StateAction_list[1:])
+        eva_batch = torch.tensor(evaluate_list, dtype=torch.float)
+        with torch.no_grad():
+            td_target_list = self.Q_Net(eva_batch).numpy()
+        for t in range(self.buffer_size):
+            td_target_list[t] =td_target_list[t] + self.r_list[t]
+
+        
+
+        sa_batch = torch.tensor(self.StateAction_list[:self.buffer_size], dtype=torch.float)
+        td_target_temp = torch.tensor(td_target_list, dtype=torch.float)
+
+        loss = F.smooth_l1_loss(td_target_temp.detach(), self.Q_Net(sa_batch))  
         # perform the Q value update
-        self.q[last_StateAction] = lastQTerm1 + _alpha  * q_temp
+        self.optimizer.zero_grad()   # clear gradients for next train
+        loss.backward()         # backpropagation, compute gradients
+        self.optimizer.step()        # apply gradients
+
+        self.StateAction_list = []
+        self.r_list = []
+
     # '''
+    
+
+    
 
     # eta is the learning rate
     def update_params(self, _beta, avg_Q = 'None'):
@@ -159,17 +205,17 @@ class AccessNode:
         if avg_Q == 'None':
             avg_Q = self.calc_q(last_StateAction)
 
-        # '''
+        '''
         params = self.paramsDict.get(last_State, np.zeros(self.actionNum))
         probVec = special.softmax(params)
         grad = -probVec
         actionIndex = self.actionList.index(self.action[-2])  # get the index of currentAction
         grad[actionIndex] += 1.0
         self.paramsDict[last_State] = params + _beta * avg_Q * grad    
-        # '''
-
-
         '''
+
+
+        # '''
         # policy function approximation
         param_temp = special.softmax(np.matmul(self.actionFeatureMtx[last_State], self.params))
         param_temp2 = np.zeros(self.La)
@@ -178,7 +224,7 @@ class AccessNode:
         _action_index = self.actionList.index(self.action[-2])
         _grad = self.actionFeatureMtx[last_State][_action_index,:] - param_temp2 
         self.params += _beta * _grad * avg_Q
-        '''
+        # '''
 
     def total_reward(self):
         totalReward = np.sum(self.reward) / len(self.reward)
@@ -305,12 +351,11 @@ if __name__ == "__main__":
     env = env_access.AccessGridEnv(height=height, width=width, k=k, node_per_grid=node_per_grid, ddl = ddl)
     
     # action-value function approximation feature vector dimension
-    Lq = 50 # 256
-    La = 8 #16
+    La = 12 #12 16
     Ep_Num = 1
-    T = 100000 #600000, 50000
-    evalInterval = 2000 # 10000    # evaluate the policy every evalInterval rounds (outer loop)
-    restartInterval = 100  # 500 100 2000
+    T = 20000 #400000, 50000
+    evalInterval = 2000 #2000 10000    # evaluate the policy every evalInterval rounds (outer loop)
+    restartInterval = 500  #100 500 2000
 
     # Ep_Num = 20000
     # T = 10
@@ -328,39 +373,37 @@ if __name__ == "__main__":
     accessNodeList = []
     for i in range(nodeNum):
         accessNodeList.append(\
-            AccessNode(index=i, deadline = ddl, k=k, Lq = Lq, La = La, node_per_grid=node_per_grid, env=env))
+            AccessNode(index=i, deadline = ddl, k=k, buffer_size=1, La = La, node_per_grid=node_per_grid, env=env))
 
     # Performance evaluation metrics
     policyRewardList = []
     # experi_avg_reward  = np.zeros(T)  
     temp_avg_reward0 = []
-    policy_record = []
+    
     prob_state = np.zeros((nodeNum,T))
+
+    script_dir = os.path.dirname(__file__)
+    # with open(script_dir+'\\data/my-PFA-QFA-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'w') as f:  # used to check the progress of learning
+    with open(script_dir+\
+        '\\data/my-PNN-QFA-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'w') as f:  # used to check the progress of learning
+        # first erase the file
+        f.seek(0)
+        f.truncate() 
 
     # Actor-critic
     for e in range(Ep_Num):
         # temp_experi_avg_reward = np.zeros((nodeNum,T))
-
+        policy_record = []
         env.initialize()
         for i in range(nodeNum):
             accessNodeList[i].restart()
-            accessNodeList[i].restart_params()
+            # accessNodeList[i].restart_params()
             accessNodeList[i].initialize_state()
         for i in range(nodeNum):
             accessNodeList[i].update_action()
         for i in range(nodeNum):
             accessNodeList[i].update_k_hop()
 
-        # Q-function function approximation
-        # Synchronize Q feature Matrix after initialization
-        for j in range(gridNum):
-            _node = accessNodeList[j * node_per_grid]
-            StateAction_pair = _node.kHop[-1]
-            if StateAction_pair not in _node.qFeatureMtx:
-                _node.qFeatureMtx[StateAction_pair] = np.random.rand(_node.Lq)/np.sqrt(_node.Lq)
-                for l in range(1, node_per_grid):
-                    accessNodeList[j * node_per_grid + l].qFeatureMtx[StateAction_pair] =\
-                         _node.qFeatureMtx[StateAction_pair]
 
 
         for t in trange(1,T+1): 
@@ -375,16 +418,6 @@ if __name__ == "__main__":
             for i in range(nodeNum):
                 accessNodeList[i].update_k_hop()
 
-            # Q-function function approximation
-            # Synchronize Q feature Matrix after initialization
-            for j in range(gridNum):
-                _node = accessNodeList[j * node_per_grid]
-                StateAction_pair = _node.kHop[-1]
-                if StateAction_pair not in _node.qFeatureMtx:
-                    _node.qFeatureMtx[StateAction_pair] = np.random.rand(_node.Lq)/np.sqrt(_node.Lq)
-                    for l in range(1, node_per_grid):
-                        accessNodeList[j * node_per_grid + l].qFeatureMtx[StateAction_pair] =\
-                             _node.qFeatureMtx[StateAction_pair]
 
             avg_Q = []
             if t == 1:
@@ -402,8 +435,9 @@ if __name__ == "__main__":
             for i in range(nodeNum):           
                 accessNodeList[i].update_avgreward(1.0 / math.sqrt(t % restartInterval + 1))
                 # Q-function function approximation 
+                accessNodeList[i].update_q_model()
                 # accessNodeList[i].update_q_params(1.0 / math.sqrt(t % restartInterval + 1))
-                accessNodeList[i].update_q(1.0 / math.sqrt(t % restartInterval + 1))
+                # accessNodeList[i].update_q(1.0 / math.sqrt(t % restartInterval + 1))
                 
                 # accessNodeList[i].update_avgreward(_alpha(t))
                 # accessNodeList[i].update_q(_alpha(t))
@@ -431,10 +465,12 @@ if __name__ == "__main__":
             if t % evalInterval == evalInterval - 1 or t == 1:
                 temp_policy = []
                 for i in range(nodeNum):
-                    temp_policy.append(accessNodeList[i].paramsDict)
+                    # temp_policy.append(accessNodeList[i].paramsDict)
                     # # policy function approximation
-                    # temp_policy.append(accessNodeList[i].params)
+                    temp_policy.append(accessNodeList[i].params)
                 policy_record.append(copy.deepcopy(temp_policy))
+
+        
 
     #     for i in range(nodeNum):
     #         if t == 1:
@@ -455,24 +491,18 @@ if __name__ == "__main__":
             bestBenchmark = tmp
             bestBenchmarkProb = i / 20.0
 
-    script_dir = os.path.dirname(__file__)
-    # with open(script_dir+'\\data/my-PFA-QFA-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'w') as f:  # used to check the progress of learning
-    with open(script_dir+\
-        '\\data/my-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'w') as f:  # used to check the progress of learning
-        # first erase the file
-        f.seek(0)
-        f.truncate()   
-
+ 
     for _policy in policy_record:
         for i in range(nodeNum):
-            accessNodeList[i].paramsDict = _policy[i]
+            # accessNodeList[i].paramsDict = _policy[i]
             # # policy function approximation
-            # accessNodeList[i].params = _policy[i]
+            accessNodeList[i].params = _policy[i]
         temp = eval_policy(node_list=accessNodeList, rounds=1, T=3000,  env=env)
         temp_avg_reward0.append(temp)
         with open(script_dir+\
-            '\\data/my-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'a') as f:
+            '\\data/my-PNN-QFA-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'a') as f:
                 f.write("%f\n" % temp)
+
    
     '''
    # test start-------------------------
@@ -480,20 +510,20 @@ if __name__ == "__main__":
     for i in range(nodeNum):
         plt.plot(np.arange(T),prob_state[i,:])
     plt.show()
-    '''
+    
 
     # softmax update aciton
     for state_temp in list(accessNodeList[0].actionFeatureMtx.keys()):
         prob_state=np.zeros(nodeNum)
         for i in range(nodeNum):
-            prob_temp = special.softmax(accessNodeList[i].paramsDict.get(state_temp))
+            # prob_temp = special.softmax(accessNodeList[i].paramsDict.get(state_temp))
             # policy function approximation
-            # prob_temp = special.softmax(np.matmul(accessNodeList[i].actionFeatureMtx[state_temp], \
-            #     accessNodeList[i].params))
+            prob_temp = special.softmax(np.matmul(accessNodeList[i].actionFeatureMtx[state_temp], \
+                accessNodeList[i].params))
             prob_state[i] = prob_temp[0]
         print(state_temp, prob_state)
     # test end-------------------------
-    
+    '''
 
     # temp_avg_reward = np.sum(np.reshape(temp_avg_reward0, [Ep_Num, (T+1) // evalInterval]), axis = 0) / Ep_Num
     fig2, ax2 = plt.subplots()
@@ -504,5 +534,5 @@ if __name__ == "__main__":
     plt.title("Simulated Average Return (\mu)")
     plt.xlabel('iteration')
     plt.savefig(script_dir+\
-        "\\data/my-Tabular-Access-{}-{}-{}-{}-{}.jpg".format(height, width, k, node_per_grid,ddl))
+        "\\data/my-PNN-QFA-Tabular-Access-{}-{}-{}-{}-{}.jpg".format(height, width, k, node_per_grid,ddl))
     plt.show()

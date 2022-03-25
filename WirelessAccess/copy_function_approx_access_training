@@ -23,8 +23,8 @@ class AccessNode:
         self.qFeatureMtx = {}
         self.actionFeatureMtx = {}
         self.q =  {}
-        self.qparams = np.random.rand(self.Lq) 
-        self.params = np.random.rand(self.La) #np.zeros(self.La) 
+        self.params = np.zeros(self.La)
+        self.qparams = np.zeros(self.Lq)
         self.paramsDict = {}
 
 
@@ -52,10 +52,11 @@ class AccessNode:
     # initialize the local state (called at the beginning of the training process)
     def initialize_state(self):
         self.state.append(self.env.observe_state_g_v2(self.index, self.k))  # append this state to state record
+        # depth = 0 when node_per_grid>0
         # self.state.append(self.env.observe_state_g_v2(self.index, 0))  # append this state to state record
         
         # self.state.append(self.env.observe_state_g(self.index))  
-
+        # self.state.append(self.env.observe_local_state_g_v2(self.index, 0))
     def restart_params(self):
         self.params = np.zeros(self.La)
         self.qparams = np.zeros(self.Lq)
@@ -63,11 +64,15 @@ class AccessNode:
     # At each time, user node observes the state of the whole grid
     def update_state(self):
         self.state.append(self.env.observe_state_g_v2(self.index, self.k))  # append this state to state record
+        # depth = 0 when node_per_grid>0
         # self.state.append(self.env.observe_state_g_v2(self.index, 0))  # append this state to state record
+
+        # self.state.append(self.env.observe_local_state_g_v2(self.index, 0))
         # self.state.append(self.env.observe_state_g(self.index))
 
     # need to call this after the first time step
     def update_k_hop(self):
+        # self.kHop.append(self.env.observe_local_state_action_g(self.index))
         self.kHop.append(self.env.observe_state_action_g(self.index))
     
     def update_action(self):
@@ -297,18 +302,18 @@ if __name__ == "__main__":
     ddl = 1
     height = 2
     width = 2
-    node_per_grid = 2 # fixed 1
+    node_per_grid = 1 # fixed 1
     gridNum = height * width
     nodeNum = gridNum * node_per_grid
     env = env_access.AccessGridEnv(height=height, width=width, k=k, node_per_grid=node_per_grid, ddl = ddl)
     
     # action-value function approximation feature vector dimension
-    Lq = 300 # 256
-    La = 16 #16
+    Lq = 200 # 256
+    La = 12 #12 16
     Ep_Num = 1
-    T = 500000 #600000, 50000
-    evalInterval = 2000 # 10000    # evaluate the policy every evalInterval rounds (outer loop)
-    restartInterval = 500  # 500 100 2000
+    T = 20000 #400000, 50000
+    evalInterval = 2000 #2000 10000    # evaluate the policy every evalInterval rounds (outer loop)
+    restartInterval = 100  #100 500 2000
 
     # Ep_Num = 20000
     # T = 10
@@ -332,25 +337,25 @@ if __name__ == "__main__":
     policyRewardList = []
     # experi_avg_reward  = np.zeros(T)  
     temp_avg_reward0 = []
-    policy_record = []
+    
     prob_state = np.zeros((nodeNum,T))
 
     script_dir = os.path.dirname(__file__)
     # with open(script_dir+'\\data/my-PFA-QFA-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'w') as f:  # used to check the progress of learning
     with open(script_dir+\
-        '\\data/my-PFA-QFA-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'w') as f:  # used to check the progress of learning
+        '\\data/my-PFA-QFA-Lq2000-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'w') as f:  # used to check the progress of learning
         # first erase the file
         f.seek(0)
-        f.truncate()   
+        f.truncate() 
 
     # Actor-critic
     for e in range(Ep_Num):
         # temp_experi_avg_reward = np.zeros((nodeNum,T))
-
+        policy_record = []
         env.initialize()
         for i in range(nodeNum):
             accessNodeList[i].restart()
-            accessNodeList[i].restart_params()
+            # accessNodeList[i].restart_params()
             accessNodeList[i].initialize_state()
         for i in range(nodeNum):
             accessNodeList[i].update_action()
@@ -442,6 +447,8 @@ if __name__ == "__main__":
                     temp_policy.append(accessNodeList[i].params)
                 policy_record.append(copy.deepcopy(temp_policy))
 
+        
+
     #     for i in range(nodeNum):
     #         if t == 1:
     #             temp_experi_avg_reward[i,t-1] = accessNodeList[i].reward[-1]
@@ -461,6 +468,7 @@ if __name__ == "__main__":
             bestBenchmark = tmp
             bestBenchmarkProb = i / 20.0
 
+ 
     for _policy in policy_record:
         for i in range(nodeNum):
             # accessNodeList[i].paramsDict = _policy[i]
@@ -469,8 +477,9 @@ if __name__ == "__main__":
         temp = eval_policy(node_list=accessNodeList, rounds=1, T=3000,  env=env)
         temp_avg_reward0.append(temp)
         with open(script_dir+\
-            '\\data/my-PFA-QFA-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'a') as f:
+            '\\data/my-PFA-QFA-Lq2000-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'a') as f:
                 f.write("%f\n" % temp)
+
    
     '''
    # test start-------------------------
@@ -478,7 +487,7 @@ if __name__ == "__main__":
     for i in range(nodeNum):
         plt.plot(np.arange(T),prob_state[i,:])
     plt.show()
-    '''
+    
 
     # softmax update aciton
     for state_temp in list(accessNodeList[0].actionFeatureMtx.keys()):
@@ -491,7 +500,7 @@ if __name__ == "__main__":
             prob_state[i] = prob_temp[0]
         print(state_temp, prob_state)
     # test end-------------------------
-    
+    '''
 
     # temp_avg_reward = np.sum(np.reshape(temp_avg_reward0, [Ep_Num, (T+1) // evalInterval]), axis = 0) / Ep_Num
     fig2, ax2 = plt.subplots()
@@ -502,5 +511,5 @@ if __name__ == "__main__":
     plt.title("Simulated Average Return (\mu)")
     plt.xlabel('iteration')
     plt.savefig(script_dir+\
-        "\\data/my-PFA-QFA-Tabular-Access-{}-{}-{}-{}-{}.jpg".format(height, width, k, node_per_grid,ddl))
+        "\\data/my-PFA-QFA-Lq2000-Tabular-Access-{}-{}-{}-{}-{}.jpg".format(height, width, k, node_per_grid,ddl))
     plt.show()
