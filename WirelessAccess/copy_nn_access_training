@@ -353,7 +353,7 @@ if __name__ == "__main__":
     # action-value function approximation feature vector dimension
     La = 12 #12 16
     Ep_Num = 1
-    T = 20000 #400000, 50000
+    T = 1000000 #400000, 50000
     evalInterval = 2000 #2000 10000    # evaluate the policy every evalInterval rounds (outer loop)
     restartInterval = 500  #100 500 2000
 
@@ -385,7 +385,7 @@ if __name__ == "__main__":
     script_dir = os.path.dirname(__file__)
     # with open(script_dir+'\\data/my-PFA-QFA-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'w') as f:  # used to check the progress of learning
     with open(script_dir+\
-        '\\data/my-PNN-QFA-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'w') as f:  # used to check the progress of learning
+        '\\data/my-PNN-QFA3-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'w') as f:  # used to check the progress of learning
         # first erase the file
         f.seek(0)
         f.truncate() 
@@ -500,7 +500,7 @@ if __name__ == "__main__":
         temp = eval_policy(node_list=accessNodeList, rounds=1, T=3000,  env=env)
         temp_avg_reward0.append(temp)
         with open(script_dir+\
-            '\\data/my-PNN-QFA-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'a') as f:
+            '\\data/my-PNN-QFA3-Tabular-Access-{}-{}-{}-{}-{}.txt'.format(height, width, k, node_per_grid, ddl), 'a') as f:
                 f.write("%f\n" % temp)
 
    
@@ -534,5 +534,5 @@ if __name__ == "__main__":
     plt.title("Simulated Average Return (\mu)")
     plt.xlabel('iteration')
     plt.savefig(script_dir+\
-        "\\data/my-PNN-QFA-Tabular-Access-{}-{}-{}-{}-{}.jpg".format(height, width, k, node_per_grid,ddl))
+        "\\data/my-PNN-QFA3-Tabular-Access-{}-{}-{}-{}-{}.jpg".format(height, width, k, node_per_grid,ddl))
     plt.show()
